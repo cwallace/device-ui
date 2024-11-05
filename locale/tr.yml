@@ -2,7 +2,7 @@ tr:
   no new messages: ~
   1 of 1 nodes online: ~
   'uptime 00:00:00': ~
-  'Heap: 0\nLVGL: 0': ~
+  "Heap: 0\nLVGL: 0": ~
   DEL: ~
   'User name: ': ~
   'Modem Preset: LONG FAST': ~
@@ -37,10 +37,10 @@ tr:
   Short Name: ~
   Long Name: ~
   <unset>: ~
-  LONG FAST\nLONG SLOW\n-- deprecated --\nMEDIUM SLOW\nMEDIUM FAST\nSHORT SLOW\nSHORT FAST\nLONG MODERATE\nSHORT TURBO: ~
-  Client\nClient Mute\nRouter\n-- deprecated --\nRepeater\nTracker\nSensor\nTAK\nClient Hidden\nLost & Found\nTAK Tracker: ~
+  "LONG FAST\nLONG SLOW\n-- deprecated --\nMEDIUM SLOW\nMEDIUM FAST\nSHORT SLOW\nSHORT FAST\nLONG MODERATE\nSHORT TURBO": ~
+  "Client\nClient Mute\nRouter\n-- deprecated --\nRepeater\nTracker\nSensor\nTAK\nClient Hidden\nLost & Found\nTAK Tracker": ~
   'Brightness: 60%': ~
-  Dark\nLight: ~
+  "Dark\nLight": ~
   'Timeout: 60s': ~
   Screen Lock: ~
   Lock PIN: ~
@@ -52,7 +52,7 @@ tr:
   Default: ~
   Zone: ~
   City: ~
-  NodeDB Reset\nFactory Reset: ~
+  "NodeDB Reset\nFactory Reset": ~
   Channel Name: ~
   Pre-shared Key: ~
   Unknown: ~
@@ -66,11 +66,11 @@ tr:
   Telemetry: ~
   IAQ: ~
   Start: ~
-  New Message from\n: ~
+  "New Message from\n": ~
   Resynch...: ~
   OK: ~
   Cancel: ~
-  'FrequencySlot: %d (%.2f MHz)': ~
+  'FrequencySlot: %d (%g MHz)': ~
   'Brightness: %d%%': ~
   'Timeout: off': ~
   'Timeout: %ds': ~
@@ -78,7 +78,7 @@ tr:
   done: ~
   default: ~
   Stop: ~
-  choose\nnode: ~
+  "choose\nnode": ~
   choose target node: ~
   'heard: !%08x': ~
   'Packet Log: %d': ~
@@ -101,7 +101,7 @@ tr:
   unknown: ~
   <no name>: ~
   '%d active chat(s)': ~
-  New message from \n%s: ~
+  "New message from \n%s": ~
   'Input Control: %s/%s': ~
   '%d of %d nodes online': ~
   Filtering ...: ~
@@ -110,11 +110,31 @@ tr:
   '%d new message': ~
   '%d new messages': ~
   'uptime: %02d:%02d:%02d': ~
-  'Heap: %d (%d%%)\nLVGL: %d (%d%%)': ~
+  "Heap: %d (%d%%)\nLVGL: %d (%d%%)": ~
   Settings: ~
   Tools: ~
   Filter: ~
   Highlight: ~
-  choose node: ~
   Primary Channel: ~
   Secondary Channels: ~
+  Resynch ...: ~
+  Rebooting ...: ~
+  Shutting down ...: ~
+  LoRa 0.0 MHz: ~
+  silent: ~
+  'WiFi: <not setup>': ~
+  'Lock: off/off': ~
+  LoRa TX off!: ~
+  WiFi SSID: ~
+  WiFi pre-shared Key: ~
+  Settings Lock: ~
+  'Lock: %s/%s': ~
+  Enter Text ...: ~
+  '!Enter Filter ...': ~
+  Enter Filter ...: ~
+  'WiFi: %s': ~
+  <not set>: ~
+  region unset: ~
+  Banner & Sound: ~
+  Banner only: ~
+  Sound only: ~

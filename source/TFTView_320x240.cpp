@@ -22,6 +22,7 @@
 #include <ctime>
 #include <functional>
 #include <list>
+#include <locale>
 
 #ifdef ARCH_PORTDUINO
 #include "LinuxHelper.h"
@@ -82,6 +83,7 @@ TFTView_320x240::TFTView_320x240(const DisplayDriverConfig *cfg, DisplayDriver *
 {
     filter.active = false;
     highlight.active = false;
+    objects.main_screen = nullptr;
 }
 
 /**
@@ -91,16 +93,16 @@ TFTView_320x240::TFTView_320x240(const DisplayDriverConfig *cfg, DisplayDriver *
  */
 void TFTView_320x240::init(IClientBase *client)
 {
-    ILOG_DEBUG("TFTView_320x240 init...\n");
-    ILOG_DEBUG("TFTView_320x240 db size: %d\n", sizeof(TFTView_320x240));
-    ILOG_DEBUG("### Images size in flash ###\n");
+    ILOG_DEBUG("TFTView_320x240 init...");
+    ILOG_DEBUG("TFTView_320x240 db size: %d", sizeof(TFTView_320x240));
+    ILOG_DEBUG("### Images size in flash ###");
     uint32_t total_size = 0;
     for (int i = 0; i < sizeof(images) / sizeof(ext_img_desc_t); i++) {
         total_size += images[i].img_dsc->data_size;
-        ILOG_DEBUG("    %s: %d\n", images[i].name, images[i].img_dsc->data_size);
+        ILOG_DEBUG("    %s: %d", images[i].name, images[i].img_dsc->data_size);
     }
-    ILOG_DEBUG("================================\n");
-    ILOG_DEBUG("### Total size: %d bytes ###\n", total_size);
+    ILOG_DEBUG("================================");
+    ILOG_DEBUG("### Total size: %d bytes ###", total_size);
 
     MeshtasticView::init(client);
 
@@ -109,7 +111,6 @@ void TFTView_320x240::init(IClientBase *client)
 
     time(&lastrun60);
     time(&lastrun10);
-    lastrun10 += 10;
     time(&lastrun5);
     time(&lastrun1);
 }
@@ -119,36 +120,55 @@ void TFTView_320x240::init(IClientBase *client)
  */
 void TFTView_320x240::setupUIConfig(const meshtastic_DeviceUIConfig& uiconfig)
 {
-    ILOG_DEBUG("setupUIConfig\n");
-    db.uiConfig = uiconfig;
+    if (uiconfig.version == 1) {
+        ILOG_INFO("setupUIConfig version %d", uiconfig.version);
+        db.uiConfig = uiconfig;
+        if (db.uiConfig.screen_timeout == 1) {
+            db.uiConfig.screen_timeout = 30;
+            controller->storeUIConfig(db.uiConfig);
+        }
+    }
+    else {
+        ILOG_WARN("invalid uiconfig version %d, reset UI settings to default", uiconfig.version);
+        db.uiConfig.version = 1;
+        db.uiConfig.screen_brightness = 153;
+        db.uiConfig.screen_timeout = 30;
+        controller->storeUIConfig(db.uiConfig);
+    }
 
     lv_i18n_init(lv_i18n_language_pack);
-    setLanguageLocale(uiconfig.language);
+    setLocale(db.uiConfig.language);
 
     // now we have set language, continue creating all screens
     if (!screensInitialised)
         init_screens();
 
     // set language
-    setLanguage(uiconfig.language);
+    setLanguage(db.uiConfig.language);
 
     //TODO: set virtual keyboard according language
-    // setKeyboard(uiconfig.language);
+    // setKeyboard(db.uiConfig.language);
 
     // set theme
-    Themes::set(Themes::Theme(uiconfig.theme));
-    Themes::initStyles();
-    updateTheme();
-    //lv_dropdown_set_selected(objects.settings_theme_dropdown, uiconfig.theme);
-    //setTheme(uiconfig.theme);
+    setTheme(db.uiConfig.theme);
+
+    // grey out bell until we got the ringtone (0 = silent)
+    Themes::recolorButton(objects.home_bell_button, false);
+    Themes::recolorText(objects.home_bell_label, false);
+
     lv_obj_set_style_bg_img_recolor(objects.home_button, lv_color_hex(0x67EA94), LV_PART_MAIN | LV_STATE_DEFAULT);
 
     // set brightness
     if (displaydriver->hasLight())
-        THIS->setBrightness(uiconfig.screen_brightness);
+        THIS->setBrightness(db.uiConfig.screen_brightness);
 
     // set timeout
-    THIS->setTimeout(uiconfig.screen_timeout);
+    THIS->setTimeout(db.uiConfig.screen_timeout);
+
+    // set screen/settings lock
+    char buf[32];
+    lv_snprintf(buf, 32, _("Lock: %s/%s"), db.uiConfig.screen_lock ? _("on") : _("off"), db.uiConfig.settings_lock ? _("on") : _("off"));
+    lv_label_set_text(objects.basic_settings_screen_lock_label, buf);
 
     // set node filter options
     meshtastic_NodeFilter &filter = db.uiConfig.node_filter;
@@ -172,7 +192,16 @@ void TFTView_320x240::setupUIConfig(const meshtastic_DeviceUIConfig& uiconfig)
     if (ownNode && objects.node_panel)
         nodes[ownNode] = objects.node_panel;
 
-    //lv_obj_invalidate(objects.main_screen);
+    lv_disp_trig_activity(NULL);
+}
+
+/**
+ * @brief display custom message on boot screen
+ *        Note: currently, the firmware version field is used and set in main()/setup()
+ */
+void TFTView_320x240::updateBootMessage(void)
+{
+    lv_label_set_text(objects.firmware_label, firmware_version);
 }
 
 /**
@@ -197,7 +226,7 @@ void TFTView_320x240::init_screens(void)
     ui_events_init();
 
     // load main screen
-    lv_screen_load_anim(objects.main_screen, LV_SCR_LOAD_ANIM_NONE, 300, std::min(millis() + 3000, 9000UL), false);
+    lv_screen_load_anim(objects.main_screen, LV_SCR_LOAD_ANIM_NONE, 300, 2000, false);
 
     // re-configuration based on capabilities
     if (!displaydriver->hasLight())
@@ -257,7 +286,7 @@ void TFTView_320x240::init_screens(void)
     updateFreeMem();
 
     screensInitialised = true;
-    ILOG_DEBUG("TFTView_320x240 init done.\n");
+    ILOG_DEBUG("TFTView_320x240 init done.");
 }
 
 /**
@@ -326,10 +355,12 @@ void TFTView_320x240::apply_hotfix(void)
     lv_label_set_text(objects.detector_start_label, _("Start"));
     lv_obj_clear_flag(objects.detector_start_button_panel, LV_OBJ_FLAG_HIDDEN);
 
-    //updateTheme();
+    lv_textarea_set_placeholder_text(objects.message_input_area, _("Enter Text ..."));
+    lv_textarea_set_placeholder_text(objects.nodes_filter_name_area, _("!Enter Filter ..."));
+    lv_textarea_set_placeholder_text(objects.nodes_hl_name_area, _("Enter Filter ..."));
 
     auto applyStyle = [](lv_obj_t *tab_buttons) {
-        for (int i = 0; i < tab_buttons->spec_attr->child_cnt; i++) {
+        for (int i = 0; i < lv_obj_get_child_count(tab_buttons); i++) {
             if (tab_buttons->spec_attr->children[i]->class_p == &lv_button_class) {
                 lv_obj_add_style(tab_buttons->spec_attr->children[i], &style_btn_default, LV_STATE_DEFAULT);
                 lv_obj_add_style(tab_buttons->spec_attr->children[i], &style_btn_active, LV_STATE_CHECKED);
@@ -391,11 +422,15 @@ void TFTView_320x240::apply_hotfix(void)
 void TFTView_320x240::updateTheme(void)
 {
     Themes::initStyles();
+    Themes::recolorButton(objects.home_lora_button, db.config.lora.tx_enabled);
+    Themes::recolorButton(objects.home_bell_button, db.uiConfig.alert_enabled || !db.silent);
     Themes::recolorButton(objects.home_location_button,
                           db.config.position.gps_mode == meshtastic_Config_PositionConfig_GpsMode_ENABLED);
     Themes::recolorButton(objects.home_wlan_button, db.config.network.wifi_enabled);
     Themes::recolorButton(objects.home_mqtt_button, db.module_config.mqtt.enabled);
     Themes::recolorButton(objects.home_memory_button, (bool)objects.home_memory_button->user_data);
+    Themes::recolorText(objects.home_lora_label, db.config.lora.tx_enabled);
+    Themes::recolorText(objects.home_bell_label, db.uiConfig.alert_enabled || !db.silent);
     Themes::recolorText(objects.home_location_label,
                         db.config.position.gps_mode == meshtastic_Config_PositionConfig_GpsMode_ENABLED);
     Themes::recolorText(objects.home_wlan_label, db.config.network.wifi_enabled);
@@ -438,6 +473,8 @@ void TFTView_320x240::ui_events_init(void)
     lv_obj_add_event_cb(objects.home_mail_button, this->ui_event_EnvelopeButton, LV_EVENT_CLICKED, NULL);
     lv_obj_add_event_cb(objects.home_nodes_button, this->ui_event_OnlineNodesButton, LV_EVENT_CLICKED, NULL);
     lv_obj_add_event_cb(objects.home_time_button, this->ui_event_TimeButton, LV_EVENT_CLICKED, NULL);
+    lv_obj_add_event_cb(objects.home_lora_button, this->ui_event_LoRaButton, LV_EVENT_LONG_PRESSED, NULL);
+    lv_obj_add_event_cb(objects.home_bell_button, this->ui_event_BellButton, LV_EVENT_ALL, NULL);
     lv_obj_add_event_cb(objects.home_location_button, this->ui_event_LocationButton, LV_EVENT_ALL, NULL);
     lv_obj_add_event_cb(objects.home_wlan_button, this->ui_event_WLANButton, LV_EVENT_ALL, NULL);
     lv_obj_add_event_cb(objects.home_mqtt_button, this->ui_event_MQTTButton, LV_EVENT_ALL, NULL);
@@ -470,6 +507,8 @@ void TFTView_320x240::ui_events_init(void)
     lv_obj_add_event_cb(objects.keyboard_button_5, ui_event_KeyboardButton, LV_EVENT_CLICKED, (void *)5);
     lv_obj_add_event_cb(objects.keyboard_button_6, ui_event_KeyboardButton, LV_EVENT_CLICKED, (void *)6);
     lv_obj_add_event_cb(objects.keyboard_button_7, ui_event_KeyboardButton, LV_EVENT_CLICKED, (void *)7);
+    lv_obj_add_event_cb(objects.keyboard_button_8, ui_event_KeyboardButton, LV_EVENT_CLICKED, (void *)8);
+    lv_obj_add_event_cb(objects.keyboard_button_9, ui_event_KeyboardButton, LV_EVENT_CLICKED, (void *)9);
 
     // message text area
     lv_obj_add_event_cb(objects.message_input_area, ui_event_message_ready, LV_EVENT_ALL, NULL);
@@ -479,6 +518,7 @@ void TFTView_320x240::ui_events_init(void)
     lv_obj_add_event_cb(objects.basic_settings_role_button, ui_event_role_button, LV_EVENT_CLICKED, NULL);
     lv_obj_add_event_cb(objects.basic_settings_region_button, ui_event_region_button, LV_EVENT_CLICKED, NULL);
     lv_obj_add_event_cb(objects.basic_settings_modem_preset_button, ui_event_preset_button, LV_EVENT_CLICKED, NULL);
+    lv_obj_add_event_cb(objects.basic_settings_wifi_button, ui_event_wifi_button, LV_EVENT_CLICKED, NULL);
     lv_obj_add_event_cb(objects.basic_settings_language_button, ui_event_language_button, LV_EVENT_CLICKED, NULL);
     lv_obj_add_event_cb(objects.basic_settings_channel_button, ui_event_channel_button, LV_EVENT_CLICKED, NULL);
     lv_obj_add_event_cb(objects.basic_settings_timeout_button, ui_event_timeout_button, LV_EVENT_CLICKED, NULL);
@@ -505,10 +545,6 @@ void TFTView_320x240::ui_events_init(void)
     lv_obj_add_event_cb(objects.settings_modem_preset_dropdown, ui_event_modem_preset_dropdown, LV_EVENT_VALUE_CHANGED, NULL);
 
     // OK / Cancel widget for basic settings dialog
-    lv_obj_add_event_cb(objects.obj0__ok_button_w, ui_event_ok, LV_EVENT_CLICKED, 0);
-    lv_obj_add_event_cb(objects.obj0__cancel_button_w, ui_event_cancel, LV_EVENT_CLICKED, 0);
-    lv_obj_add_event_cb(objects.obj1__ok_button_w, ui_event_ok, LV_EVENT_CLICKED, 0);
-    lv_obj_add_event_cb(objects.obj1__cancel_button_w, ui_event_cancel, LV_EVENT_CLICKED, 0);
     lv_obj_add_event_cb(objects.obj2__ok_button_w, ui_event_ok, LV_EVENT_CLICKED, 0);
     lv_obj_add_event_cb(objects.obj2__cancel_button_w, ui_event_cancel, LV_EVENT_CLICKED, 0);
     lv_obj_add_event_cb(objects.obj3__ok_button_w, ui_event_ok, LV_EVENT_CLICKED, 0);
@@ -535,6 +571,12 @@ void TFTView_320x240::ui_events_init(void)
     lv_obj_add_event_cb(objects.obj13__cancel_button_w, ui_event_cancel, LV_EVENT_CLICKED, 0);
     lv_obj_add_event_cb(objects.obj14__ok_button_w, ui_event_ok, LV_EVENT_CLICKED, 0);
     lv_obj_add_event_cb(objects.obj14__cancel_button_w, ui_event_cancel, LV_EVENT_CLICKED, 0);
+    lv_obj_add_event_cb(objects.obj15__ok_button_w, ui_event_ok, LV_EVENT_CLICKED, 0);
+    lv_obj_add_event_cb(objects.obj15__cancel_button_w, ui_event_cancel, LV_EVENT_CLICKED, 0);
+    lv_obj_add_event_cb(objects.obj16__ok_button_w, ui_event_ok, LV_EVENT_CLICKED, 0);
+    lv_obj_add_event_cb(objects.obj16__cancel_button_w, ui_event_cancel, LV_EVENT_CLICKED, 0);
+    lv_obj_add_event_cb(objects.obj19__ok_button_w, ui_event_ok, LV_EVENT_CLICKED, 0);
+    lv_obj_add_event_cb(objects.obj19__cancel_button_w, ui_event_cancel, LV_EVENT_CLICKED, 0);
 
     // modify channel buttons
     lv_obj_add_event_cb(objects.settings_channel0_button, ui_event_modify_channel, LV_EVENT_ALL, (void *)0);
@@ -696,7 +738,14 @@ void TFTView_320x240::ui_event_SettingsButton(lv_event_t *e)
     lv_event_code_t event_code = lv_event_get_code(e);
     static bool advancedMode = false;
     if (event_code == LV_EVENT_CLICKED && THIS->activeSettings == eNone) {
-        THIS->ui_set_active(objects.settings_button, objects.controller_panel, objects.top_settings_panel);
+        if (THIS->db.uiConfig.settings_lock) {
+            lv_obj_add_flag(objects.tab_page_basic_settings, LV_OBJ_FLAG_HIDDEN);
+            THIS->ui_set_active(objects.settings_button, objects.controller_panel, objects.top_settings_panel);
+            lv_screen_load_anim(objects.lock_screen, LV_SCR_LOAD_ANIM_NONE, 0, 0, false);
+        }
+        else {
+            THIS->ui_set_active(objects.settings_button, objects.controller_panel, objects.top_settings_panel);
+        }
     } else if (event_code == LV_EVENT_LONG_PRESSED && !advancedMode && THIS->activeSettings == eNone) {
         if (lv_obj_has_state(objects.settings_screen_lock_switch, LV_STATE_CHECKED)) {
             screenLocked = true;
@@ -831,6 +880,84 @@ void TFTView_320x240::ui_event_TimeButton(lv_event_t *e)
     }
 }
 
+void TFTView_320x240::ui_event_LoRaButton(lv_event_t *e)
+{
+    lv_event_code_t event_code = lv_event_get_code(e);
+    if (event_code == LV_EVENT_LONG_PRESSED && THIS->db.config.has_lora) {
+        // toggle lora tx on/off
+        meshtastic_Config_LoRaConfig &lora = THIS->db.config.lora;
+        lora.tx_enabled = !lora.tx_enabled;
+        THIS->controller->sendConfig(meshtastic_Config_LoRaConfig{lora});
+        THIS->showLoRaFrequency(lora);
+    }
+}
+
+void TFTView_320x240::ui_event_BellButton(lv_event_t *e)
+{
+    static bool ignoreClicked = false;
+    lv_event_code_t event_code = lv_event_get_code(e);
+    if (event_code == LV_EVENT_CLICKED && THIS->db.module_config.has_external_notification) {
+        if (ignoreClicked) { // prevent long press to enter this setting
+            ignoreClicked = false;
+            return;
+        }
+        // set banner and sound on
+        if (THIS->db.silent && (bool)objects.home_bell_button->user_data) {
+            if (THIS->db.ringtoneId == 0) {
+                THIS->db.ringtoneId = 1;
+            }
+            THIS->db.silent = false;
+            THIS->db.uiConfig.alert_enabled = true;
+            THIS->controller->sendConfig(ringtone[THIS->db.ringtoneId].rtttl, THIS->ownNode);
+            objects.home_bell_button->user_data = (void *)false;
+        }
+        // toggle sound only
+        else if (THIS->db.uiConfig.alert_enabled && !THIS->db.silent) {
+            if (THIS->db.ringtoneId == 0) {
+                THIS->db.ringtoneId = 1;
+            }
+            THIS->db.uiConfig.alert_enabled = false;
+            THIS->controller->sendConfig(ringtone[THIS->db.ringtoneId].rtttl, THIS->ownNode);
+        }
+        // toggle banner only
+        else if (!THIS->db.uiConfig.alert_enabled && !THIS->db.silent) {
+            THIS->db.silent = true;
+            THIS->db.uiConfig.alert_enabled = true;
+            THIS->controller->sendConfig(ringtone[0].rtttl, THIS->ownNode);
+        }
+        // toggle banner & sound
+        else {
+            if (THIS->db.ringtoneId == 0) {
+                THIS->db.ringtoneId = 1;
+            }
+            THIS->db.silent = false;
+            THIS->db.uiConfig.alert_enabled = true;
+            THIS->controller->sendConfig(ringtone[THIS->db.ringtoneId].rtttl, THIS->ownNode);
+        }
+        THIS->setBellText(THIS->db.uiConfig.alert_enabled, !THIS->db.silent);
+        THIS->controller->storeUIConfig(THIS->db.uiConfig);
+    } else if (event_code == LV_EVENT_LONG_PRESSED) {
+        ignoreClicked = true;
+        if ((bool)objects.home_bell_button->user_data) {
+            if (THIS->db.ringtoneId == 0) {
+                THIS->db.ringtoneId = 1;
+            }
+            THIS->db.silent = false;
+            THIS->db.uiConfig.alert_enabled = true;
+            THIS->controller->sendConfig(ringtone[THIS->db.ringtoneId].rtttl, THIS->ownNode);
+            objects.home_bell_button->user_data = (void *)false;
+        }
+        else {
+            THIS->db.silent = true;
+            THIS->db.uiConfig.alert_enabled = false;
+            THIS->controller->sendConfig(ringtone[0].rtttl, THIS->ownNode);
+            objects.home_bell_button->user_data = (void *)true;
+        }
+        THIS->setBellText(THIS->db.uiConfig.alert_enabled, !THIS->db.silent);
+        THIS->controller->storeUIConfig(THIS->db.uiConfig);
+    }
+}
+
 void TFTView_320x240::ui_event_LocationButton(lv_event_t *e)
 {
     lv_event_code_t event_code = lv_event_get_code(e);
@@ -860,9 +987,26 @@ void TFTView_320x240::ui_event_LocationButton(lv_event_t *e)
 
 void TFTView_320x240::ui_event_WLANButton(lv_event_t *e)
 {
+    static bool ignoreClicked = false;
     lv_event_code_t event_code = lv_event_get_code(e);
-    if (event_code == LV_EVENT_LONG_PRESSED && THIS->configComplete) {
+#if 0
+    if (event_code == LV_EVENT_CLICKED && THIS->db.config.has_network && THIS->activeSettings == eNone) {
+        if (ignoreClicked) { // prevent long press to enter this setting
+            ignoreClicked = false;
+            return;
+        }
+        lv_textarea_set_text(objects.settings_wifi_ssid_textarea, THIS->db.config.network.wifi_ssid);
+        lv_textarea_set_text(objects.settings_wifi_password_textarea, THIS->db.config.network.wifi_psk);
+        lv_obj_clear_flag(objects.settings_wifi_panel, LV_OBJ_FLAG_HIDDEN);
+        lv_group_focus_obj(objects.settings_wifi_ssid_textarea);
+        THIS->disablePanel(objects.home_panel);
+        THIS->activeSettings = eWifi;
+    }
+    else 
+#endif
+    if (event_code == LV_EVENT_LONG_PRESSED && THIS->db.config.has_network) {
         // toggle WLAN on/off
+        ignoreClicked = true;
         uint32_t toggle = (unsigned long)objects.home_wlan_button->user_data;
         objects.home_wlan_button->user_data = (void *)(1 - toggle);
         meshtastic_Config_NetworkConfig &network = THIS->db.config.network;
@@ -942,8 +1086,16 @@ void TFTView_320x240::ui_event_KeyboardButton(lv_event_t *e)
             THIS->showKeyboard(objects.settings_screen_lock_password_textarea);
             lv_group_focus_obj(objects.settings_screen_lock_password_textarea);
             break;
+        case 8:
+            THIS->showKeyboard(objects.settings_wifi_ssid_textarea);
+            lv_group_focus_obj(objects.settings_wifi_ssid_textarea);
+            break;
+        case 9:
+            THIS->showKeyboard(objects.settings_wifi_password_textarea);
+            lv_group_focus_obj(objects.settings_wifi_password_textarea);
+            break;
         default:
-            ILOG_ERROR("missing keyboard <-> textarea assignment\n");
+            ILOG_ERROR("missing keyboard <-> textarea assignment");
         }
         lv_obj_has_flag(objects.keyboard, LV_OBJ_FLAG_HIDDEN) ? lv_obj_remove_flag(objects.keyboard, LV_OBJ_FLAG_HIDDEN)
                                                               : lv_obj_add_flag(objects.keyboard, LV_OBJ_FLAG_HIDDEN);
@@ -1049,7 +1201,7 @@ void TFTView_320x240::ui_event_preset_button(lv_event_t *e)
         lv_dropdown_set_selected(objects.settings_modem_preset_dropdown, THIS->db.config.lora.modem_preset);
 
         char buf[40];
-        sprintf(buf, _("FrequencySlot: %d (%.2f MHz)"), THIS->db.config.lora.channel_num,
+        sprintf(buf, _("FrequencySlot: %d (%g MHz)"), THIS->db.config.lora.channel_num,
                 LoRaPresets::getRadioFreq(THIS->db.config.lora.region, THIS->db.config.lora.modem_preset,
                                           THIS->db.config.lora.channel_num));
         lv_label_set_text(objects.frequency_slot_label, buf);
@@ -1061,6 +1213,19 @@ void TFTView_320x240::ui_event_preset_button(lv_event_t *e)
         lv_obj_clear_flag(objects.settings_modem_preset_panel, LV_OBJ_FLAG_HIDDEN);
         lv_group_focus_obj(objects.settings_modem_preset_dropdown);
         THIS->disablePanel(objects.controller_panel);
+    }
+}
+
+void TFTView_320x240::ui_event_wifi_button(lv_event_t *e)
+{
+    lv_event_code_t event_code = lv_event_get_code(e);
+    if (event_code == LV_EVENT_CLICKED && THIS->db.config.has_network && THIS->activeSettings == eNone) {
+        lv_textarea_set_text(objects.settings_wifi_ssid_textarea, THIS->db.config.network.wifi_ssid);
+        lv_textarea_set_text(objects.settings_wifi_password_textarea, THIS->db.config.network.wifi_psk);
+        lv_obj_clear_flag(objects.settings_wifi_panel, LV_OBJ_FLAG_HIDDEN);
+        lv_group_focus_obj(objects.settings_wifi_ssid_textarea);
+        THIS->disablePanel(objects.controller_panel);
+        THIS->activeSettings = eWifi;
     }
 }
 
@@ -1170,12 +1335,17 @@ void TFTView_320x240::ui_event_screen_lock_button(lv_event_t *e)
     lv_event_code_t event_code = lv_event_get_code(e);
     if (event_code == LV_EVENT_CLICKED && THIS->activeSettings == eNone) {
         char buf[10];
-        lv_snprintf(buf, 7, "%06d", THIS->db.config.bluetooth.fixed_pin);
+        lv_snprintf(buf, 7, "%06d", THIS->db.uiConfig.pin_code);
         lv_textarea_set_text(objects.settings_screen_lock_password_textarea, buf);
-        if (strcmp(buf, "000000") != 0) {
+        if (THIS->db.uiConfig.screen_lock) {
             lv_obj_add_state(objects.settings_screen_lock_switch, LV_STATE_CHECKED);
         } else {
             lv_obj_remove_state(objects.settings_screen_lock_switch, LV_STATE_CHECKED);
+        }
+        if (THIS->db.uiConfig.settings_lock) {
+            lv_obj_add_state(objects.settings_settings_lock_switch, LV_STATE_CHECKED);
+        } else {
+            lv_obj_remove_state(objects.settings_settings_lock_switch, LV_STATE_CHECKED);
         }
 
         lv_obj_clear_flag(objects.settings_screen_lock_panel, LV_OBJ_FLAG_HIDDEN);
@@ -1224,7 +1394,8 @@ void TFTView_320x240::ui_event_alert_button(lv_event_t *e)
     lv_event_code_t event_code = lv_event_get_code(e);
     if (event_code == LV_EVENT_CLICKED && THIS->activeSettings == eNone && THIS->db.module_config.has_external_notification) {
         bool alert_enabled = THIS->db.module_config.external_notification.alert_message_buzzer &&
-                             THIS->db.module_config.external_notification.enabled;
+                             THIS->db.module_config.external_notification.enabled &&
+                             !THIS->db.silent;
         if (alert_enabled) {
             lv_obj_add_state(objects.settings_alert_buzzer_switch, LV_STATE_CHECKED);
         } else {
@@ -1232,12 +1403,12 @@ void TFTView_320x240::ui_event_alert_button(lv_event_t *e)
         }
         // populate dropdown
         if (lv_dropdown_get_option_count(objects.settings_ringtone_dropdown) <= 1) {
-            for (int i = 1; i < numRingtones; i++) {
+            for (int i = 2; i < numRingtones; i++) {
                 lv_dropdown_add_option(objects.settings_ringtone_dropdown, ringtone[i].name, i);
             }
         }
 
-        lv_dropdown_set_selected(objects.settings_ringtone_dropdown, THIS->db.ringtoneId);
+        lv_dropdown_set_selected(objects.settings_ringtone_dropdown, THIS->db.ringtoneId - 1);
         lv_obj_clear_flag(objects.settings_alert_buzzer_panel, LV_OBJ_FLAG_HIDDEN);
         lv_group_focus_obj(objects.settings_alert_buzzer_switch);
         THIS->disablePanel(objects.controller_panel);
@@ -1336,7 +1507,7 @@ void TFTView_320x240::ui_event_modify_channel(lv_event_t *e)
                             btn_id = 0; // place on top
                         } else {
                             // FIXME: swap ids as in long press
-                            ILOG_ERROR("node does not have primary channel!\n");
+                            ILOG_ERROR("node does not have primary channel!");
                         }
                     } else
                         THIS->channel_scratch[i].role = meshtastic_Channel_Role_SECONDARY;
@@ -1422,11 +1593,12 @@ void TFTView_320x240::ui_event_pin_screen_button(lv_event_t *e)
                 lv_label_set_text(objects.lock_screen_digits_label, hidden[pinKeys]);
 
                 char buf[10];
-                lv_snprintf(buf, 7, "%06d", THIS->db.config.bluetooth.fixed_pin);
+                lv_snprintf(buf, 7, "%06d", THIS->db.uiConfig.pin_code);
                 if (pinKeys == 6 && strcmp(pinEntered, buf) == 0) {
                     // unlock screen
                     pinKeys = 0;
                     screenLocked = false;
+                    lv_obj_clear_flag(objects.tab_page_basic_settings, LV_OBJ_FLAG_HIDDEN);
                     lv_screen_load_anim(objects.main_screen, LV_SCR_LOAD_ANIM_FADE_IN, 100, 0, false);
                     lv_label_set_text(objects.lock_screen_digits_label, hidden[pinKeys]);
                 }
@@ -1549,14 +1721,39 @@ void TFTView_320x240::ui_event_trace_route(lv_event_t *e)
     THIS->removeSpinner();
 
     // remove old route except first button and spinner panel
+    ILOG_DEBUG("removing old route: %d %d %d", lv_obj_get_child_cnt(objects.trace_route_panel),
+                                               lv_obj_get_child_cnt(objects.route_towards_panel),
+                                               lv_obj_get_child_cnt(objects.route_back_panel));
+
     uint16_t children = lv_obj_get_child_cnt(objects.trace_route_panel) - 1;
     while (children > 1) {
         if (objects.trace_route_panel->spec_attr->children[children]->class_p == &lv_button_class) {
             lv_obj_delete(objects.trace_route_panel->spec_attr->children[children]);
-            children--;
+        }
+        children--;
+    }
+
+    // forward route
+    children = lv_obj_get_child_cnt(objects.route_towards_panel);
+    while (children > 0) {
+        children--;
+        if (objects.route_towards_panel->spec_attr->children[children]->class_p == &lv_button_class) {
+            lv_obj_delete(objects.route_towards_panel->spec_attr->children[children]);
         }
     }
+
+    // backward route
+    children = lv_obj_get_child_cnt(objects.route_back_panel);
+    while (children > 0) {
+        children--;
+        if (objects.route_back_panel->spec_attr->children[children]->class_p == &lv_button_class) {
+            lv_obj_delete(objects.route_back_panel->spec_attr->children[children]);
+        }
+    }
+
     lv_obj_clear_flag(objects.start_button_panel, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_add_flag(objects.hop_routes_panel, LV_OBJ_FLAG_HIDDEN);
+
     if (currentPanel) {
         THIS->setNodeImage(THIS->currentNode,
                            (MeshtasticView::eRole)(unsigned long)currentPanel->LV_OBJ_IDX(node_img_idx)->user_data, false,
@@ -1574,8 +1771,10 @@ void TFTView_320x240::ui_event_trace_route(lv_event_t *e)
 
 void TFTView_320x240::ui_event_trace_route_to(lv_event_t *e)
 {
-    THIS->chooseNodeTraceRoute = true;
-    THIS->ui_set_active(objects.nodes_button, objects.nodes_panel, objects.top_nodes_panel);
+    if (!spinnerButton) {
+        THIS->chooseNodeTraceRoute = true;
+        THIS->ui_set_active(objects.nodes_button, objects.nodes_panel, objects.top_nodes_panel);
+    }
 }
 
 void TFTView_320x240::ui_event_trace_route_start(lv_event_t *e)
@@ -1600,7 +1799,9 @@ void TFTView_320x240::ui_event_trace_route_start(lv_event_t *e)
                     uint32_t to = it.first;
                     uint8_t ch = (uint8_t)(unsigned long)currentPanel->user_data;
                     // trial: hoplimit optimization for direct messages
-                    uint8_t hopsAway = (unsigned long)THIS->nodes[to]->LV_OBJ_IDX(node_sig_idx)->user_data;
+                    int8_t hopsAway = (signed long)THIS->nodes[to]->LV_OBJ_IDX(node_sig_idx)->user_data;
+                    if (hopsAway < 0) 
+                        hopsAway = 5;
                     uint8_t hopLimit = (hopsAway < THIS->db.config.lora.hop_limit ? hopsAway + 1 : hopsAway);
                     requestId = THIS->requests.addRequest(to, ResponseHandler::TraceRouteRequest);
                     THIS->controller->traceRoute(to, ch, hopLimit, requestId);
@@ -1612,6 +1813,14 @@ void TFTView_320x240::ui_event_trace_route_start(lv_event_t *e)
         // restart
         ui_event_trace_route(e);
     }
+}
+
+void TFTView_320x240::ui_event_trace_route_node(lv_event_t *e)
+{   
+    // navigate to node in node list
+    lv_obj_t *panel = (lv_obj_t*)e->user_data;
+    THIS->ui_set_active(objects.nodes_button, objects.nodes_panel, objects.top_nodes_panel);
+    lv_obj_scroll_to_view(panel, LV_ANIM_ON);
 }
 
 void TFTView_320x240::removeSpinner(void)
@@ -1886,6 +2095,7 @@ void TFTView_320x240::updateStatistics(const meshtastic_MeshPacket &p)
             stat.inf++;
             break;
         }
+        case meshtastic_PortNum_ROUTING_APP:
         case meshtastic_PortNum_TRACEROUTE_APP: {
             stat.trc++;
             break;
@@ -1898,8 +2108,12 @@ void TFTView_320x240::updateStatistics(const meshtastic_MeshPacket &p)
             stat.nbr++;
             break;
         }
+        case meshtastic_PortNum_ADMIN_APP: {
+            // ignore
+            break;
+        }
         default:
-            ILOG_DEBUG("unspecified packet in stats\n");
+            ILOG_WARN("packet portnum in stats unhandled: %d", p.decoded.portnum);
             stat.sum++;
             return;
     }
@@ -1992,17 +2206,37 @@ uint32_t TFTView_320x240::language2val(meshtastic_Language lang)
     case meshtastic_Language_ENGLISH:
         return 0;
     case meshtastic_Language_FRENCH:
-        return 3;
+        return 4;
     case meshtastic_Language_GERMAN:
         return 1;
     case meshtastic_Language_ITALIAN:
-        return 4;
-    case meshtastic_Language_PORTUGUESE:
         return 5;
+    case meshtastic_Language_PORTUGUESE:
+        return 8;
     case meshtastic_Language_SPANISH:
+        return 3;
+    case meshtastic_Language_SWEDISH:
+        return 12;
+    case meshtastic_Language_FINNISH:
+        return 11;
+    case meshtastic_Language_POLISH:
+        return 7;
+    case meshtastic_Language_TURKISH:
+        return 13;
+    case meshtastic_Language_SERBIAN:
+        return 10;
+    case meshtastic_Language_RUSSIAN:
+        return 9;
+    case meshtastic_Language_DUTCH:
+        return 6;
+    case meshtastic_Language_GREEK:
         return 2;
+    case meshtastic_Language_SIMPLIFIED_CHINESE:
+        return 14;
+    case meshtastic_Language_TRADITIONAL_CHINESE:
+        return 15;
     default:
-        ILOG_WARN("unknown language uiconfig\n");
+        ILOG_WARN("unknown language uiconfig: %d", lang);
     }
     return 0;
 }
@@ -2012,18 +2246,38 @@ meshtastic_Language TFTView_320x240::val2language(uint32_t val)
     switch(val) {
     case 0:
         return meshtastic_Language_ENGLISH;
-    case 3:
+    case 4:
         return meshtastic_Language_FRENCH;
     case 1:
         return meshtastic_Language_GERMAN;
-    case 4:
-        return meshtastic_Language_ITALIAN;
     case 5:
+        return meshtastic_Language_ITALIAN;
+    case 8:
         return meshtastic_Language_PORTUGUESE;
-    case 2:
+    case 3:
         return meshtastic_Language_SPANISH;
+    case 12:
+        return meshtastic_Language_SWEDISH;
+    case 11:
+        return meshtastic_Language_FINNISH;
+    case 7:
+        return meshtastic_Language_POLISH;
+    case 13:
+        return meshtastic_Language_TURKISH;
+    case 10:
+        return meshtastic_Language_SERBIAN;
+    case 9:
+        return meshtastic_Language_RUSSIAN;
+    case 6:
+        return meshtastic_Language_DUTCH;
+    case 2:
+        return meshtastic_Language_GREEK;
+    case 14:
+        return meshtastic_Language_SIMPLIFIED_CHINESE;
+    case 15:
+        return meshtastic_Language_TRADITIONAL_CHINESE;
     default:
-        ILOG_WARN("unknown language val\n");
+        ILOG_WARN("unknown language val: %d", val);
     }
     return meshtastic_Language_ENGLISH;
 }
@@ -2031,31 +2285,81 @@ meshtastic_Language TFTView_320x240::val2language(uint32_t val)
 /**
  * @brief Set lv_i18n language
  */
-void TFTView_320x240::setLanguageLocale(meshtastic_Language lang)
+void TFTView_320x240::setLocale(meshtastic_Language lang)
 {
+    const char *locale = "en_US.UTF-8";
     switch (lang) {
     case meshtastic_Language_ENGLISH:
         lv_i18n_set_locale("en");
         break;
     case meshtastic_Language_GERMAN:
         lv_i18n_set_locale("de");
+        locale = "de_DE.UTF-8";
         break;
     case meshtastic_Language_SPANISH:
         lv_i18n_set_locale("es");
+        locale = "es_ES.UTF-8";
         break;
     case meshtastic_Language_FRENCH:
         lv_i18n_set_locale("fr");
+        locale = "fr_FR.UTF-8";
         break;
     case meshtastic_Language_ITALIAN:
         lv_i18n_set_locale("it");
+        locale = "it_IT.UTF-8";
         break;
     case meshtastic_Language_PORTUGUESE:
         lv_i18n_set_locale("pt");
+        locale = "pt_PT.UTF-8";
+        break;
+    case meshtastic_Language_SWEDISH:
+        lv_i18n_set_locale("se");
+        locale = "sv_SE.UTF-8";
+        break;
+    case meshtastic_Language_FINNISH:
+        lv_i18n_set_locale("fi");
+        locale = "fi_FI.UTF-8";
+        break;
+    case meshtastic_Language_POLISH:
+        lv_i18n_set_locale("pl");
+        locale = "pl_PL.UTF-8";
+        break;
+    case meshtastic_Language_TURKISH:
+        lv_i18n_set_locale("tr");
+        locale = "tr_TR.UTF-8";
+        break;
+    case meshtastic_Language_SERBIAN:
+        lv_i18n_set_locale("sr");
+        locale = "sr_RS.UTF-8";
+        break;
+    case meshtastic_Language_DUTCH:
+        lv_i18n_set_locale("nl");
+        locale = "nl_NL.UTF-8";
+        break;
+    case meshtastic_Language_RUSSIAN:
+        lv_i18n_set_locale("ru");
+        locale = "ru_RU.UTF-8";
+        break;
+    case meshtastic_Language_GREEK:
+        lv_i18n_set_locale("gr");
+        locale = "el_GR.UTF-8";
+        break;
+    case meshtastic_Language_SIMPLIFIED_CHINESE:
+        lv_i18n_set_locale("cn");
+        locale = "zh_CN.UTF-8";
+        break;
+    case meshtastic_Language_TRADITIONAL_CHINESE:
+        lv_i18n_set_locale("tw");
+        locale = "zh_TW.UTF-8";
         break;
     default:
-        ILOG_WARN("Language %d not implemented\n", lang);
+        ILOG_WARN("Language %d not implemented", lang);
         break;
     }
+
+#ifdef ARCH_PORTDUINO
+    std::locale::global(std::locale(locale));
+#endif
 }
 
 /**
@@ -2063,7 +2367,7 @@ void TFTView_320x240::setLanguageLocale(meshtastic_Language lang)
  */
 void TFTView_320x240::setLanguage(meshtastic_Language lang)
 {
-    char buf1[10], buf2[30];
+    char buf1[20], buf2[40];
     lv_dropdown_set_selected(objects.settings_language_dropdown, language2val(lang));
     lv_dropdown_get_selected_str(objects.settings_language_dropdown, buf1, sizeof(buf1));
     lv_snprintf(buf2, sizeof(buf2), _("Language: %s"), buf1);
@@ -2096,11 +2400,12 @@ void TFTView_320x240::setBrightness(uint32_t brightness)
 }
 
 /**
- * @brief Set theme according current dropdown selection
+ * @brief Set theme to new value
  */
 void TFTView_320x240::setTheme(uint32_t value)
 {
     char buf1[10], buf2[30];
+    lv_dropdown_set_selected(objects.settings_theme_dropdown, value);
     lv_dropdown_get_selected_str(objects.settings_theme_dropdown, buf1, sizeof(buf1));
     lv_snprintf(buf2, sizeof(buf2), _("Theme: %s"), buf1);
     lv_label_set_text(objects.basic_settings_theme_label, buf2);
@@ -2256,6 +2561,23 @@ void TFTView_320x240::ui_event_ok(lv_event_t *e)
             delete[] THIS->channel_scratch;
             break;
         }
+        case eWifi: {
+            char buf[30];
+            const char *ssid = lv_textarea_get_text(objects.settings_wifi_ssid_textarea);
+            const char *psk = lv_textarea_get_text(objects.settings_wifi_password_textarea);
+            lv_snprintf(buf, sizeof(buf), _("WiFi: %s"), ssid[0] ? ssid : _("<not set>"));
+            lv_label_set_text(objects.basic_settings_wifi_label, buf);
+            if (strcmp(THIS->db.config.network.wifi_ssid, ssid) != 0 || strcmp(THIS->db.config.network.wifi_psk, psk) != 0) {
+                strcpy(THIS->db.config.network.wifi_ssid, ssid);
+                strcpy(THIS->db.config.network.wifi_psk, psk);
+                THIS->controller->sendConfig(meshtastic_Config_NetworkConfig{THIS->db.config.network}, THIS->ownNode);
+                THIS->notifyReboot(true);
+            }
+            //THIS->enablePanel(objects.home_panel);
+            lv_obj_add_flag(objects.settings_wifi_panel, LV_OBJ_FLAG_HIDDEN);
+            lv_group_focus_obj(objects.basic_settings_wifi_button);
+            break;
+        }
         case eLanguage: {
             uint32_t value = lv_dropdown_get_selected(objects.settings_language_dropdown);
             meshtastic_Language lang = THIS->val2language(value);
@@ -2284,21 +2606,21 @@ void TFTView_320x240::ui_event_ok(lv_event_t *e)
             break;
         }
         case eScreenLock: {
-            meshtastic_Config_BluetoothConfig &bt = THIS->db.config.bluetooth;
             const char *pin = lv_textarea_get_text(objects.settings_screen_lock_password_textarea);
-            bool lock = lv_obj_has_state(objects.settings_screen_lock_switch, LV_STATE_CHECKED);
-            if (lock && (atol(pin) == 0 || strlen(pin) != 6))
+            bool screenLock = lv_obj_has_state(objects.settings_screen_lock_switch, LV_STATE_CHECKED);
+            bool settingsLock = lv_obj_has_state(objects.settings_settings_lock_switch, LV_STATE_CHECKED);
+            if ((screenLock || settingsLock) && (atol(pin) == 0 || strlen(pin) != 6))
                 return; // require pin != "000000"
-            if ((!lock && bt.fixed_pin != 0) || bt.fixed_pin != atol(pin)) {
-                if (!lock)
-                    bt.fixed_pin = 0;
-                else
-                    bt.fixed_pin = atol(pin);
-                THIS->controller->sendConfig(meshtastic_Config_BluetoothConfig{bt}, THIS->ownNode);
-                THIS->notifyReboot(true);
+            if ((screenLock != THIS->db.uiConfig.screen_lock) || settingsLock != THIS->db.uiConfig.settings_lock ||
+                 atol(pin) != THIS->db.uiConfig.pin_code) {
+                THIS->db.uiConfig.screen_lock = screenLock;
+                THIS->db.uiConfig.settings_lock = settingsLock;
+                THIS->db.uiConfig.pin_code = atol(pin);
+                THIS->controller->storeUIConfig(THIS->db.uiConfig);
             }
+
             char buf[32];
-            lv_snprintf(buf, 32, _("Screen Lock: %s"), lock ? _("on") : _("off"));
+            lv_snprintf(buf, 32, _("Lock: %s/%s"), screenLock ? _("on") : _("off"), settingsLock ? _("on") : _("off"));
             lv_label_set_text(objects.basic_settings_screen_lock_label, buf);
             lv_obj_add_flag(objects.settings_screen_lock_panel, LV_OBJ_FLAG_HIDDEN);
 
@@ -2355,7 +2677,7 @@ void TFTView_320x240::ui_event_ok(lv_event_t *e)
             THIS->setInputButtonLabel();
 
             if (error) {
-                ILOG_WARN("failed to use %s/%s\n", new_val_kbd, new_val_ptr);
+                ILOG_WARN("failed to use %s/%s", new_val_kbd, new_val_ptr);
                 return;
             }
 
@@ -2374,10 +2696,10 @@ void TFTView_320x240::ui_event_ok(lv_event_t *e)
             break;
         }
         case eAlertBuzzer: {
-            char buf[32];
             meshtastic_ModuleConfig_ExternalNotificationConfig &config = THIS->db.module_config.external_notification;
-            int tone = lv_dropdown_get_selected(objects.settings_ringtone_dropdown);
+            int tone = lv_dropdown_get_selected(objects.settings_ringtone_dropdown) + 1;
 
+            bool silent = false;
             bool alert_message = lv_obj_has_state(objects.settings_alert_buzzer_switch, LV_STATE_CHECKED);
             if ((!config.enabled || !config.alert_message_buzzer) && alert_message) {
                 if (!config.enabled || !config.alert_message_buzzer || !config.use_pwm || !config.use_i2s_as_buzzer) {
@@ -2393,17 +2715,15 @@ void TFTView_320x240::ui_event_ok(lv_event_t *e)
                 THIS->notifyReboot(true);
                 THIS->controller->sendConfig(meshtastic_ModuleConfig_ExternalNotificationConfig{config}, THIS->ownNode);
             } else if (config.alert_message_buzzer && !alert_message) {
-                config.enabled = false;
-                config.alert_message_buzzer = false;
-                THIS->notifyReboot(true);
-                THIS->controller->sendConfig(meshtastic_ModuleConfig_ExternalNotificationConfig{config}, THIS->ownNode);
+                silent = true;
             }
 
-            THIS->controller->sendConfig(ringtone[tone].rtttl, THIS->ownNode);
+            THIS->controller->sendConfig(ringtone[silent ? 0 : tone].rtttl, THIS->ownNode);
             THIS->db.ringtoneId = tone;
-
-            lv_snprintf(buf, sizeof(buf), _("Message Alert: %s"), config.alert_message_buzzer ? ringtone[tone].name : "off");
-            lv_label_set_text(objects.basic_settings_alert_label, buf);
+            THIS->db.silent = silent;
+            THIS->db.uiConfig.alert_enabled = !silent;
+            THIS->setBellText(THIS->db.uiConfig.alert_enabled, !silent);
+            THIS->controller->storeUIConfig(THIS->db.uiConfig);
 
             lv_obj_add_flag(objects.settings_alert_buzzer_panel, LV_OBJ_FLAG_HIDDEN);
             lv_group_focus_obj(objects.basic_settings_alert_button);
@@ -2455,7 +2775,7 @@ void TFTView_320x240::ui_event_ok(lv_event_t *e)
             return;
         }
         default:
-            ILOG_ERROR("Unhandled ok event\n");
+            ILOG_ERROR("Unhandled ok event");
             break;
         }
         THIS->enablePanel(objects.controller_panel);
@@ -2497,6 +2817,13 @@ void TFTView_320x240::ui_event_cancel(lv_event_t *e)
             delete[] THIS->channel_scratch;
             lv_obj_add_flag(objects.settings_channel_panel, LV_OBJ_FLAG_HIDDEN);
             lv_group_focus_obj(objects.basic_settings_channel_button);
+            break;
+        }
+        case TFTView_320x240::eWifi: {
+            lv_obj_add_flag(objects.settings_wifi_panel, LV_OBJ_FLAG_HIDDEN);
+            //THIS->enablePanel(objects.home_panel);
+            lv_group_focus_obj(objects.home_wlan_button);
+
             break;
         }
         case TFTView_320x240::eLanguage: {
@@ -2550,7 +2877,7 @@ void TFTView_320x240::ui_event_cancel(lv_event_t *e)
             return;
         }
         default:
-            ILOG_ERROR("Unhandled cancel event\n");
+            ILOG_ERROR("Unhandled cancel event");
             break;
         }
 
@@ -2589,7 +2916,7 @@ void TFTView_320x240::ui_event_frequency_slot_slider(lv_event_t *e)
     lv_obj_t *slider = lv_event_get_target_obj(e);
     char buf[40];
     uint32_t channel = (uint32_t)lv_slider_get_value(slider);
-    sprintf(buf, _("FrequencySlot: %d (%.2f MHz)"), channel,
+    sprintf(buf, _("FrequencySlot: %d (%g MHz)"), channel,
             LoRaPresets::getRadioFreq(
                 THIS->db.config.lora.region,
                 (meshtastic_Config_LoRaConfig_ModemPreset)lv_dropdown_get_selected(objects.settings_modem_preset_dropdown),
@@ -2617,7 +2944,7 @@ void TFTView_320x240::ui_event_modem_preset_dropdown(lv_event_t *e)
     lv_slider_set_value(objects.frequency_slot_slider, channel, LV_ANIM_ON);
 
     char buf[40];
-    sprintf(buf, _("FrequencySlot: %d (%.2f MHz)"), channel,
+    sprintf(buf, _("FrequencySlot: %d (%g MHz)"), channel,
             LoRaPresets::getRadioFreq(THIS->db.config.lora.region, preset, channel));
     lv_label_set_text(objects.frequency_slot_label, buf);
 }
@@ -2715,7 +3042,7 @@ void TFTView_320x240::addMessage(uint32_t requestId, char *msg)
     lv_obj_t *textLabel = lv_label_create(hiddenPanel);
     // calculate expected size of text bubble, to make it look nicer
     lv_coord_t width = lv_txt_get_width(msg, strlen(msg), &ui_font_montserrat_12, 0);
-    lv_obj_set_width(textLabel, std::max(std::min(width + 20, 200), 40));
+    lv_obj_set_width(textLabel, std::max<int32_t>(std::min<int32_t>(width + 20, 200), 40));
     lv_obj_set_height(textLabel, LV_SIZE_CONTENT);
     lv_obj_set_y(textLabel, 0);
     lv_obj_set_align(textLabel, LV_ALIGN_RIGHT_MID);
@@ -2841,7 +3168,7 @@ void TFTView_320x240::addNode(uint32_t nodeNum, uint8_t ch, const char *userShor
         time(&curtime);
         lastHeard = std::min(curtime, (time_t)lastHeard); // adapt values too large
 
-        char buf[12];
+        char buf[20];
         bool isOnline = lastHeardToString(lastHeard, buf);
         lv_label_set_text(ui_lastHeardLabel, buf);
         if (isOnline) {
@@ -3109,7 +3436,7 @@ void TFTView_320x240::updateMetrics(uint32_t nodeNum, uint32_t bat_level, float 
 {
     auto it = nodes.find(nodeNum);
     if (it != nodes.end()) {
-        char buf[32];
+        char buf[48];
         if (it->first == ownNode) {
             sprintf(buf, _("Util %0.1f%%  Air %0.1f%%"), chUtil, airUtil);
             lv_label_set_text(it->second->LV_OBJ_IDX(node_sig_idx), buf);
@@ -3154,7 +3481,7 @@ void TFTView_320x240::updateMetrics(uint32_t nodeNum, uint32_t bat_level, float 
                     alert = true;
                     break;
                 default:
-                    ILOG_ERROR("unhandled battery level %d\n", status);
+                    ILOG_ERROR("unhandled battery level %d", status);
                     break;
                 }
                 Themes::recolorTopLabel(objects.battery_percentage_label, alert);
@@ -3220,7 +3547,7 @@ void TFTView_320x240::updateSignalStrength(uint32_t nodeNum, int32_t rssi, float
     if (nodeNum != ownNode) {
         auto it = nodes.find(nodeNum);
         if (it != nodes.end()) {
-            char buf[30];
+            char buf[32];
             if (rssi == 0.0 && snr == 0.0) {
                 buf[0] = '\0';
             } else {
@@ -3237,7 +3564,7 @@ void TFTView_320x240::updateHopsAway(uint32_t nodeNum, uint8_t hopsAway)
     if (nodeNum != ownNode) {
         auto it = nodes.find(nodeNum);
         if (it != nodes.end()) {
-            char buf[16];
+            char buf[32];
             sprintf(buf, _("hops: %d"), (int)hopsAway);
             lv_label_set_text(it->second->LV_OBJ_IDX(node_sig_idx), buf);
             it->second->LV_OBJ_IDX(node_sig_idx)->user_data = (void *)(unsigned long)hopsAway;
@@ -3250,7 +3577,7 @@ void TFTView_320x240::updateConnectionStatus(const meshtastic_DeviceConnectionSt
     if (status.has_wifi) {
         if (db.config.network.wifi_enabled || db.config.network.eth_enabled) {
             if (status.wifi.has_status) {
-                char buf[16];
+                char buf[20];
                 uint32_t ip = status.wifi.status.ip_address;
                 sprintf(buf, "%d.%d.%d.%d", ip & 0xff, (ip & 0xff00) >> 8, (ip & 0xff0000) >> 16, (ip & 0xff000000) >> 24);
                 lv_label_set_text(objects.home_wlan_label, buf);
@@ -3269,7 +3596,6 @@ void TFTView_320x240::updateConnectionStatus(const meshtastic_DeviceConnectionSt
                     Themes::recolorText(objects.home_mqtt_label, true);
                 } else {
                     Themes::recolorButton(objects.home_mqtt_button, db.module_config.mqtt.enabled);
-
                     Themes::recolorText(objects.home_mqtt_label, false);
                 }
             }
@@ -3293,7 +3619,7 @@ void TFTView_320x240::updateConnectionStatus(const meshtastic_DeviceConnectionSt
     if (status.has_bluetooth) {
         if (db.config.bluetooth.enabled) {
             if (status.bluetooth.is_connected) {
-                char buf[16];
+                char buf[20];
                 uint32_t mac = ownNode;
                 lv_obj_set_style_text_color(objects.home_bluetooth_label, lv_color_hex(0xAAFBFF),
                                             LV_PART_MAIN | LV_STATE_DEFAULT);
@@ -3323,7 +3649,7 @@ void TFTView_320x240::updateConnectionStatus(const meshtastic_DeviceConnectionSt
 
     if (status.has_ethernet) {
         if (status.ethernet.status.is_connected) {
-            char buf[16];
+            char buf[20];
             uint32_t mac = ownNode;
             sprintf(buf, "??:??:%02x:%02x:%02x:%02x", mac & 0xff000000, mac & 0xff0000, mac & 0xff00, mac & 0xff);
             lv_label_set_text(objects.home_ethernet_label, buf);
@@ -3355,9 +3681,9 @@ void TFTView_320x240::handleResponse(uint32_t from, const uint32_t id, const mes
     }
 
     if (req.type == ResponseHandler::noRequest) {
-        ILOG_WARN("request id 0x%08x not valid (anymore)\n", id);
+        ILOG_WARN("request id 0x%08x not valid (anymore)", id);
     } else {
-        ILOG_DEBUG("handleResponse request id 0x%08x\n", id);
+        ILOG_DEBUG("handleResponse request id 0x%08x", id);
     }
     switch (routing.which_variant) {
     case meshtastic_Routing_error_reason_tag: {
@@ -3379,21 +3705,21 @@ void TFTView_320x240::handleResponse(uint32_t from, const uint32_t id, const mes
                 handlePositionResponse(from, id, p.rx_rssi, p.rx_snr, p.hop_limit == p.hop_start);
             }
         } else {
-            ILOG_DEBUG("got Routing_Error %d\n", routing.error_reason);
+            ILOG_DEBUG("got Routing_Error %d", routing.error_reason);
         }
         break;
     }
     case meshtastic_Routing_route_request_tag: {
-        ILOG_ERROR("got meshtastic_Routing_route_request_tag\n");
+        ILOG_ERROR("got meshtastic_Routing_route_request_tag");
         break;
     }
     case meshtastic_Routing_route_reply_tag: {
-        ILOG_DEBUG("got meshtastic_Routing_route_reply_tag\n");
+        ILOG_DEBUG("got meshtastic_Routing_route_reply_tag");
         handleResponse(from, id, routing.route_reply);
         break;
     }
     default:
-        ILOG_ERROR("unhandled meshtastic_Routing tag\n");
+        ILOG_ERROR("unhandled meshtastic_Routing tag");
         break;
     }
 }
@@ -3431,51 +3757,62 @@ void TFTView_320x240::handlePositionResponse(uint32_t from, uint32_t request_id,
             lv_slider_set_value(objects.rssi_slider, rx_rssi, LV_ANIM_ON);
 
 #if defined(USE_SX127x)
-            int p_snr = ((std::max(rx_snr, -19.0f) + 19.0f) / 33.0f) * 100.0f; // range -19..14
-            int p_rssi = ((std::max(rx_rssi, -145) + 145) * 100) / 90;         // range -145..-55
+            int p_snr = ((std::max<int32_t>(rx_snr, -19.0f) + 19.0f) / 33.0f) * 100.0f; // range -19..14
+            int p_rssi = ((std::max<int32_t>(rx_rssi, -145L) + 145) * 100) / 90;         // range -145..-55
 #else
-            int p_snr = ((std::max(rx_snr, -18.0f) + 18.0f) / 26.0f) * 100.0f; // range -18..8
-            int p_rssi = ((std::max(rx_rssi, -125) + 125) * 100) / 100;        // range -125..-25
+            int p_snr = ((std::max<int32_t>(rx_snr, -18.0f) + 18.0f) / 26.0f) * 100.0f; // range -18..8
+            int p_rssi = ((std::max<int32_t>(rx_rssi, -125) + 125) * 100) / 100;        // range -125..-25
 #endif
-            sprintf(buf, "%d%%", std::min((p_snr + p_rssi * 2) / 3, 100));
+            sprintf(buf, "%d%%", std::min<int32_t>((p_snr + p_rssi * 2) / 3, 100));
             lv_label_set_text(objects.signal_scanner_start_label, buf);
         }
     } else {
-        ILOG_ERROR("handlePositionResponse: got a reply with not matching request 0x%08x\n", request_id);
+        ILOG_ERROR("handlePositionResponse: got a reply with not matching request 0x%08x", request_id);
     }
 }
 
 /**
- * Trace Route
+ * Trace Route: handle  ack or timeout
  */
-void TFTView_320x240::handleResponse(uint32_t from, uint32_t id, const meshtastic_RouteDiscovery &route)
-{
-    ILOG_DEBUG("handleResponse: trace route has %d hops\n", route.route_count);
-    lv_obj_add_flag(objects.start_button_panel, LV_OBJ_FLAG_HIDDEN);
-
-    if (id) {
-        requests.removeRequest(id);
-    }
-
-    for (int i = route.route_count; i > 0; i--) {
-        addNodeToTraceRoute(route.route[i - 1]);
-    }
-
-    // route contains only intermediate nodes, so add our node
-    addNodeToTraceRoute(ownNode);
-}
-
 void TFTView_320x240::handleTraceRouteResponse(const meshtastic_Routing &routing)
 {
-    // we get here only in case of an error
-    ILOG_DEBUG("handleTraceRouteResponse: route has %d hops\n", routing.route_reply.route_count);
+    ILOG_DEBUG("handleTraceRouteResponse: route has %d hops", routing.route_reply.route_count);
     if (routing.error_reason != meshtastic_Routing_Error_NONE) {
         lv_label_set_text(objects.trace_route_start_label, _("Start"));
         removeSpinner();
     }
+    else {
+        // we got a first ACK to our route request
+        if (spinnerButton) {
+            lv_obj_set_style_outline_color(objects.trace_route_start_button, 
+                lv_color_hex(0xDBD251), LV_PART_MAIN | LV_STATE_DEFAULT);
+        }
+    }
 }
 
-void TFTView_320x240::addNodeToTraceRoute(uint32_t nodeNum)
+void TFTView_320x240::handleResponse(uint32_t from, uint32_t id, const meshtastic_RouteDiscovery &route)
+{
+    ILOG_DEBUG("handleResponse: trace route has %d / %d hops", route.route_count, route.route_back_count);
+    lv_obj_add_flag(objects.start_button_panel, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_clear_flag(objects.hop_routes_panel, LV_OBJ_FLAG_HIDDEN);
+
+    if (id && requests.findRequest(id).type == ResponseHandler::TraceRouteRequest) {
+        requests.removeRequest(id);
+    }
+
+    for (int i = route.route_count; i > 0; i--) {
+        addNodeToTraceRoute(route.route[i - 1], objects.route_towards_panel);
+    }
+
+    for (int i = 0; i < route.route_back_count; i++) {
+        addNodeToTraceRoute(route.route_back[i], objects.route_back_panel);
+    }
+
+    // route contains only intermediate nodes, so add our node
+    addNodeToTraceRoute(ownNode, objects.trace_route_panel);
+}
+
+void TFTView_320x240::addNodeToTraceRoute(uint32_t nodeNum, lv_obj_t *panel)
 {
     // check if node exists, and get its panel
     lv_obj_t *nodePanel = nullptr;
@@ -3483,7 +3820,7 @@ void TFTView_320x240::addNodeToTraceRoute(uint32_t nodeNum)
     if (it != nodes.end()) {
         nodePanel = it->second;
     }
-    lv_obj_t *btn = lv_btn_create(objects.trace_route_panel);
+    lv_obj_t *btn = lv_btn_create(panel);
     // objects.trace_route_to_button = btn;
     lv_obj_set_pos(btn, 0, 0);
     lv_obj_set_size(btn, LV_PCT(100), 38);
@@ -3519,9 +3856,15 @@ void TFTView_320x240::addNodeToTraceRoute(uint32_t nodeNum)
             lv_obj_set_size(label, LV_PCT(80), LV_SIZE_CONTENT);
             lv_label_set_long_mode(label, LV_LABEL_LONG_SCROLL);
             if (nodePanel) {
-                lv_label_set_text(label, lv_label_get_text(nodePanel->LV_OBJ_IDX(node_lbl_idx)));
+                if (nodeNum != ownNode) {
+                    lv_obj_add_event_cb(btn, ui_event_trace_route_node, LV_EVENT_CLICKED, nodePanel);
+                    lv_label_set_text(label, lv_label_get_text(nodePanel->LV_OBJ_IDX(node_lbs_idx)));
+                }
+                else {
+                    lv_label_set_text(label, lv_label_get_text(nodePanel->LV_OBJ_IDX(node_lbl_idx)));
+                }
             } else {
-                char buf[16];
+                char buf[20];
                 if (nodeNum != UINT32_MAX) {
                     lv_snprintf(buf, 16, "!%08x", nodeNum);
                     lv_label_set_text(label, buf);
@@ -3555,7 +3898,7 @@ bool TFTView_320x240::applyNodesFilter(uint32_t nodeNum, bool reset)
         if (lv_obj_has_state(objects.nodes_filter_offline_switch, LV_STATE_CHECKED)) {
             time_t curtime, lastHeard = (time_t)panel->LV_OBJ_IDX(node_lh_idx)->user_data;
             time(&curtime);
-            if (curtime - lastHeard > secs_until_offline)
+            if (lastHeard == 0 || curtime - lastHeard > secs_until_offline)
                 hide = true;
         }
         if (lv_obj_has_state(objects.nodes_filter_public_key_switch, LV_STATE_CHECKED)) {
@@ -3709,7 +4052,7 @@ void TFTView_320x240::handleTextMessageResponse(uint32_t channelOrNode, const ui
         msgContainer = messages[channelOrNode];
     }
     if (!msgContainer) {
-        ILOG_WARN("received unexpected response nodeNum/channel 0x%08x for request id 0x%08x\n", channelOrNode, id);
+        ILOG_WARN("received unexpected response nodeNum/channel 0x%08x for request id 0x%08x", channelOrNode, id);
         return;
     }
     // go through all hiddenPanels and search for requestId
@@ -3745,42 +4088,50 @@ void TFTView_320x240::packetReceived(const meshtastic_MeshPacket &p)
 
 void TFTView_320x240::notifyResync(bool show)
 {
-    messageAlert("Resynch ...", show);
+    messageAlert(_("Resynch ..."), show);
 }
 
 void TFTView_320x240::notifyReboot(bool show)
 {
-    messageAlert("Rebooting ...", show);
+    messageAlert(_("Rebooting ..."), show);
 }
 
 void TFTView_320x240::notifyShutdown(void)
 {
-    messageAlert("Shutting down ...", true);
+    messageAlert(_("Shutting down ..."), true);
 }
 
 void TFTView_320x240::blankScreen(bool enable)
 {
     if (enable)
         lv_screen_load_anim(objects.blank_screen, LV_SCR_LOAD_ANIM_FADE_OUT, 1000, 0, false);
-    else
-        lv_screen_load_anim(objects.main_screen, LV_SCR_LOAD_ANIM_NONE, 0, 0, false);
+    else {
+        if (objects.main_screen)
+            lv_screen_load_anim(objects.main_screen, LV_SCR_LOAD_ANIM_NONE, 0, 0, false);
+        else
+            lv_screen_load_anim(objects.boot_screen, LV_SCR_LOAD_ANIM_NONE, 0, 0, false);
+    }
 }
 
 void TFTView_320x240::screenSaving(bool enabled)
 {
-    if (enabled)
-        lv_screen_load_anim(objects.blank_screen, LV_SCR_LOAD_ANIM_FADE_OUT, 1000, 0, false);
-    else
-        lv_screen_load_anim(objects.main_screen, LV_SCR_LOAD_ANIM_NONE, 0, 0, false);
-
-    // TODO: lock screen after e.g. 5 mins blanking
-    // if (THIS->db.config.bluetooth.fixed_pin)
-    //     screenLocked |= enabled;
+    if (enabled) {
+        // overlay main screen with blank screen to prevent accidentally pressing buttons
+        lv_screen_load_anim(objects.blank_screen, LV_SCR_LOAD_ANIM_FADE_OUT, 0, 0, false);
+    }
+    else {
+        if (THIS->db.uiConfig.screen_lock)
+            lv_screen_load_anim(objects.lock_screen, LV_SCR_LOAD_ANIM_NONE, 0, 0, false);
+        else if (objects.main_screen)
+            lv_screen_load_anim(objects.main_screen, LV_SCR_LOAD_ANIM_NONE, 0, 0, false);
+        else
+            lv_screen_load_anim(objects.boot_screen, LV_SCR_LOAD_ANIM_NONE, 0, 0, false);
+    }
 }
 
 bool TFTView_320x240::isScreenLocked(void)
 {
-    return THIS->db.config.bluetooth.fixed_pin && THIS->screenLocked;
+    return THIS->db.uiConfig.screen_lock && THIS->screenLocked;
 }
 
 void TFTView_320x240::updateChannelConfig(const meshtastic_Channel &ch)
@@ -3871,6 +4222,10 @@ void TFTView_320x240::updateNetworkConfig(const meshtastic_Config_NetworkConfig 
 {
     db.config.network = cfg;
     db.config.has_network = true;
+
+    char buf[40];
+    lv_snprintf(buf, sizeof(buf), _("WiFi: %s"), cfg.wifi_ssid[0] ? cfg.wifi_ssid : _("<not set>"));
+    lv_label_set_text(objects.basic_settings_wifi_label, buf);
 }
 
 void TFTView_320x240::updateDisplayConfig(const meshtastic_Config_DisplayConfig &cfg)
@@ -3883,6 +4238,8 @@ void TFTView_320x240::updateLoRaConfig(const meshtastic_Config_LoRaConfig &cfg)
 {
     db.config.lora = cfg;
     db.config.has_lora = true;
+    showLoRaFrequency(cfg);
+
     char region[30];
     lv_snprintf(region, sizeof(region), _("Region: %s"), LoRaPresets::loRaRegionToString(cfg.region));
     lv_label_set_text(objects.basic_settings_region_label, region);
@@ -3902,13 +4259,55 @@ void TFTView_320x240::updateLoRaConfig(const meshtastic_Config_LoRaConfig &cfg)
     lv_slider_set_value(objects.frequency_slot_slider, db.config.lora.channel_num, LV_ANIM_OFF);
 }
 
+void TFTView_320x240::showLoRaFrequency(const meshtastic_Config_LoRaConfig &cfg)
+{
+    char loraFreq[48];
+    float frequency = LoRaPresets::getRadioFreq(cfg.region, cfg.modem_preset, cfg.channel_num);
+    if (frequency > 1.0 && frequency < 10000.0) {
+        sprintf(loraFreq, "LoRa %g MHz\n[%s kHz]", frequency, LoRaPresets::getBandwidthString(cfg.modem_preset));
+    }
+    else {
+        strcpy(loraFreq, _("region unset"));
+    }
+    lv_label_set_text(objects.home_lora_label, loraFreq);
+    Themes::recolorButton(objects.home_lora_button, cfg.tx_enabled);
+    Themes::recolorText(objects.home_lora_label, cfg.tx_enabled);
+    if (!cfg.tx_enabled) {
+        lv_obj_clear_flag(objects.top_lora_tx_panel, LV_OBJ_FLAG_HIDDEN);
+    }
+    else {
+        lv_obj_add_flag(objects.top_lora_tx_panel, LV_OBJ_FLAG_HIDDEN);
+    }
+}
+
+void TFTView_320x240::setBellText(bool banner, bool sound)
+{
+    if (banner && sound) {
+        lv_label_set_text(objects.home_bell_label, _("Banner & Sound"));
+    }
+    else if (banner) {
+        lv_label_set_text(objects.home_bell_label, _("Banner only"));
+    }
+    else if (sound) {
+        lv_label_set_text(objects.home_bell_label, _("Sound only"));
+    }
+    else {
+        lv_label_set_text(objects.home_bell_label, _("silent"));
+    }
+
+    char buf[40];
+    lv_snprintf(buf, sizeof(buf), _("Message Alert: %s"), 
+                db.module_config.external_notification.alert_message_buzzer ? (!sound ? _("silent") : ringtone[db.ringtoneId].name) : "off");
+    lv_label_set_text(objects.basic_settings_alert_label, buf);
+
+    Themes::recolorButton(objects.home_bell_button, banner || sound);
+    Themes::recolorText(objects.home_bell_label, banner || sound);
+}
+
 void TFTView_320x240::updateBluetoothConfig(const meshtastic_Config_BluetoothConfig &cfg)
 {
     db.config.bluetooth = cfg;
     db.config.has_bluetooth = true;
-    char buf[32];
-    lv_snprintf(buf, 32, _("Screen Lock: %s"), db.config.bluetooth.fixed_pin ? _("on") : _("off"));
-    lv_label_set_text(objects.basic_settings_screen_lock_label, buf);
 }
 
 void TFTView_320x240::updateSecurityConfig(const meshtastic_Config_SecurityConfig &cfg)
@@ -3956,13 +4355,29 @@ void TFTView_320x240::updateRingtone(const char rtttl[231])
 {
     // retrieving ringtone index for dropdown
     uint16_t rtIndex = 0;
-    for (int i = 1; i < numRingtones; i++) {
+    for (int i = 0; i < numRingtones; i++) {
         if (strncmp(ringtone[i].rtttl, rtttl, 16) == 0) {
             rtIndex = i;
             break;
         }
     }
-    db.ringtoneId = rtIndex;
+    if (rtIndex != 0)
+        db.ringtoneId = rtIndex;
+    if (db.ringtoneId == 0)
+        db.ringtoneId = 1;
+    db.silent = rtIndex == 0;
+
+//    char buf[32];
+//    lv_snprintf(buf, sizeof(buf), _("Message Alert: %s"),
+//        db.module_config.external_notification.alert_message_buzzer ? (rtIndex == 0 ? _("silent") : ringtone[rtIndex].name) : "off");
+//    lv_label_set_text(objects.basic_settings_alert_label, buf);
+
+    // update home panel bell text
+    setBellText(db.uiConfig.alert_enabled, !db.silent);
+    bool off = !db.uiConfig.alert_enabled && db.silent;
+    Themes::recolorButton(objects.home_bell_button, !off);
+    Themes::recolorText(objects.home_bell_label, !off);
+    objects.home_bell_button->user_data = (void *)off;
 }
 
 void TFTView_320x240::updateTime(uint32_t time)
@@ -4078,7 +4493,7 @@ void TFTView_320x240::newMessage(uint32_t from, uint32_t to, uint8_t ch, const c
     if (container != activeMsgContainer || activePanel != objects.messages_panel) {
         unreadMessages++;
         updateUnreadMessages();
-        if (activePanel != objects.messages_panel) {
+        if (activePanel != objects.messages_panel && db.uiConfig.alert_enabled) {
             showMessagePopup(from, to, ch, lv_label_get_text(nodes[from]->LV_OBJ_IDX(node_lbl_idx)));
         }
         lv_obj_add_flag(container, LV_OBJ_FLAG_HIDDEN);
@@ -4112,7 +4527,7 @@ void TFTView_320x240::newMessage(uint32_t nodeNum, lv_obj_t *container, uint8_t 
     lv_obj_t *msgLabel = lv_label_create(hiddenPanel);
     // calculate expected size of text bubble, to make it look nicer
     lv_coord_t width = lv_txt_get_width(msg, strlen(msg), &ui_font_montserrat_12, 0);
-    lv_obj_set_width(msgLabel, std::max(std::min(width + 20, 200), 40));
+    lv_obj_set_width(msgLabel, std::max<int32_t>(std::min<int32_t>((int32_t)(width) + 20, 200), 40));
     lv_obj_set_height(msgLabel, LV_SIZE_CONTENT); /// 1
     lv_obj_set_align(msgLabel, LV_ALIGN_LEFT_MID);
     lv_label_set_text(msgLabel, msg);
@@ -4224,8 +4639,8 @@ void TFTView_320x240::highlightChat(uint32_t from, uint32_t to, uint8_t ch)
 
 void TFTView_320x240::updateActiveChats(void)
 {
-    char buf[20];
-    sprintf(buf, _("%d active chat(s)"), chats.size());
+    char buf[40];
+    sprintf(buf, _p("%d active chat(s)", chats.size()), chats.size());
     lv_label_set_text(objects.top_chats_label, buf);
 }
 
@@ -4494,8 +4909,8 @@ void TFTView_320x240::setNodeImage(uint32_t nodeNum, eRole role, bool viaMqtt, l
 
 void TFTView_320x240::updateNodesStatus(void)
 {
-    char buf[32];
-    lv_snprintf(buf, sizeof(buf), _("%d of %d nodes online"), nodesOnline, nodeCount);
+    char buf[40];
+    lv_snprintf(buf, sizeof(buf), _p("%d of %d nodes online", nodesOnline), nodesOnline, nodeCount);
     lv_label_set_text(objects.home_nodes_label, buf);
 
     if (nodesFiltered) {
@@ -4576,7 +4991,7 @@ void TFTView_320x240::updateAllLastHeard(void)
     uint16_t online = 0;
     time_t lastHeard;
     for (auto &it : nodes) {
-        char buf[20];
+        char buf[32];
         if (it.first == ownNode) { // own node is always now, so do update
             time_t curtime;
             time(&curtime);
@@ -4599,7 +5014,7 @@ void TFTView_320x240::updateAllLastHeard(void)
 
 void TFTView_320x240::updateUnreadMessages(void)
 {
-    char buf[20];
+    char buf[32];
     if (unreadMessages > 0) {
         sprintf(buf, unreadMessages == 1 ? _("%d new message") : _("%d new messages"), unreadMessages);
         lv_obj_set_style_bg_img_src(objects.home_mail_button, &img_home_mail_unread_button_image,
@@ -4689,6 +5104,8 @@ void TFTView_320x240::task_handler(void)
             if (startTime) {
                 if (curtime - startTime > 30) {
                     lv_label_set_text(objects.trace_route_start_label, _("Start"));
+                    lv_obj_set_style_outline_color(objects.trace_route_start_button, 
+                       lv_color_hex(0xff67ea94), LV_PART_MAIN | LV_STATE_DEFAULT);
                     removeSpinner();
                 } else {
                     char buf[16];
@@ -4718,6 +5135,9 @@ void TFTView_320x240::task_handler(void)
             updateNodesFiltered(false);
         }
     }
+    else {
+        updateBootMessage();
+    }
 }
 
 // === lvgl C style callbacks ===
@@ -4726,7 +5146,7 @@ extern "C" {
 
 void action_on_boot_screen_displayed(lv_event_t *e)
 {
-    ILOG_DEBUG("action_on_boot_screen_displayed()\n");
+    ILOG_DEBUG("action_on_boot_screen_displayed()");
 }
 }
 
